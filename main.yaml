@@ -1,6 +1,6 @@
 ---
 - name: Main Play
-  hosts: 192.168.100.130
+  hosts: all
   become: yes
   gather_facts: yes
   roles:

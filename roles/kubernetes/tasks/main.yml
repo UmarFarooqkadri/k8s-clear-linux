@@ -98,11 +98,16 @@
     - prereq
 
 - name: "Initialize Kubernetes Cluster"
-  shell: "kubeadm init --apiserver-advertise-address={{ ansible_default_ipv4.address }} --apiserver-cert-extra-sans={{ ansible_default_ipv4.address }} --node-name {{ ansible_hostname}} --pod-network-cidr={{ pod_subnet }}/{{ pod_cidr }}  --image-repository={{ nexus_container_repo }}"
+  shell: "kubeadm init --apiserver-advertise-address={{ ansible_default_ipv4.address }} --apiserver-cert-extra-sans={{ ansible_default_ipv4.address }} --node-name {{ ansible_hostname}} --pod-network-cidr={{ pod_subnet }}/{{ pod_cidr }}  --image-repository={{ nexus_k8s_repo }}"
+  register: init_output
   when:
     - inventory_hostname in groups['master'][0]
   tags:
     - master
+
+- name: Print Debug
+  debug:
+    msg: "{{ init_output }}"
 
 - name: "Deploy Calico CNI"
   template:
@@ -113,6 +118,7 @@
     mode: '0644'
   tags: 
     - master
+    - cni
 
 - name: "Setup kubeconfig for {{ run_user }} user on Primary master"
   file:
@@ -145,3 +151,70 @@
   tags:
     - master
 
+- name: "Generate joint token"
+  shell: "kubeadm token create 2> /dev/null"
+  become: no
+  when:
+    - inventory_hostname in groups['master'][0]
+  register: k8s_token
+  tags:
+    - master
+
+- name: Create Cert Hash
+  shell: "openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'"
+  register: k8s_hash
+  when:
+    - inventory_hostname in groups['master'][0]
+  tags:
+    - master
+
+- name: Join other Kubernetes masters to the cluster
+  shell:
+    cmd: "kubeadm join {{ groups['master'][0] }}:6443 --token {{hostvars[groups['master'][0]]['k8s_token'].stdout}} --discovery-token-unsafe-skip-ca-verification --control-plane --certificate-key {{hostvars[groups['master'][0]]['k8s_hash'].stdout}}"
+  when: 
+    - inventory_hostname in groups['master']
+    - not inventory_hostname in groups['master'][0] 
+  tags:
+    - master
+
+- name: "Setup kubeconfig for {{ run_user }} user on Backup masters"
+  file:
+    path: "/home/{{ run_user }}/.kube"
+    state: directory
+    recurse: yes
+    owner: "{{ run_user }}"
+    group: "{{ run_group }}"
+  when:
+    - inventory_hostname in groups['master']
+    - not inventory_hostname in groups['master'][0] 
+  tags:
+    - master
+
+- name: "Copy kube configuration for {{ run_user }} user on Backup masters"
+  copy:
+    src: /etc/kubernetes/admin.conf
+    remote_src: yes
+    dest: "/home/{{ run_user }}/.kube/config"
+    mode: 0644
+    owner: "{{ run_user }}"
+    group: "{{ run_group }}"
+  when:
+    - inventory_hostname in groups['master']
+    - not inventory_hostname in groups['master'][0] 
+  tags:
+    - master 
+
+- name: Restart kubelet
+  service:
+    name: kubelet
+    state: restarted
+  tags:
+    - master
+    - node
+
+- name: Join node to the cluster
+  shell:
+    cmd: "kubeadm join {{ groups['master'][0] }}:6443 --token {{ k8s_token.stdout}} --discovery-token-unsafe-skip-ca-verification"
+  when: inventory_hostname in groups['node']
+  tags:
+    - node
