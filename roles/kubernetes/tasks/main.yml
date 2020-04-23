@@ -98,7 +98,7 @@
     - prereq
 
 - name: "Initialize Kubernetes Cluster"
-  shell: "kubeadm init --apiserver-advertise-address={{ ansible_default_ipv4.address }} --apiserver-cert-extra-sans={{ ansible_default_ipv4.address }} --node-name {{ ansible_hostname}} --pod-network-cidr={{ pod_subnet }}/{{ pod_cidr }}  --image-repository={{ nexus_k8s_repo }}"
+  shell: "kubeadm init --apiserver-advertise-address={{ ansible_default_ipv4.address }} --apiserver-cert-extra-sans={{ ansible_default_ipv4.address }} --node-name {{ ansible_hostname}} --pod-network-cidr={{ pod_subnet }}/{{ pod_cidr }}  --image-repository={{ nexus_k8s_repo }} --control-plane-endpoint {{ ansible_default_ipv4.address }}:6443 --upload-certs "
   register: init_output
   when:
     - inventory_hostname in groups['master'][0]
@@ -118,7 +118,6 @@
     mode: '0644'
   tags: 
     - master
-    - cni
 
 - name: "Setup kubeconfig for {{ run_user }} user on Primary master"
   file:
@@ -161,9 +160,17 @@
     - master
 
 - name: Create Cert Hash
-  shell: "openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'"
+  shell: "openssl rand -hex 32"
   register: k8s_hash
   when:
+    - inventory_hostname in groups['master'][0]
+  tags:
+    - master
+
+- name: Upload Certificates on Primary Master
+  shell: 
+    cmd: "kubeadm init phase upload-certs --upload-certs --certificate-key={{ k8s_hash.stdout }}"
+  when: 
     - inventory_hostname in groups['master'][0]
   tags:
     - master
@@ -204,17 +211,16 @@
   tags:
     - master 
 
-- name: Restart kubelet
-  service:
-    name: kubelet
-    state: restarted
+- name: Get Node Join command on Master
+  shell: "kubeadm token create --print-join-command 2> /dev/null"
+  register: join_command
+  when:
+    - inventory_hostname in groups['master'][0]
   tags:
-    - master
     - node
 
 - name: Join node to the cluster
-  shell:
-    cmd: "kubeadm join {{ groups['master'][0] }}:6443 --token {{ k8s_token.stdout}} --discovery-token-unsafe-skip-ca-verification"
+  shell: "{{ hostvars[groups['master'][0]]['join_command'].stdout }}"
   when: inventory_hostname in groups['node']
   tags:
     - node
