@@ -1,0 +1,27 @@
+---
+- name: Main Play
+  hosts: 192.168.100.130
+  become: yes
+  gather_facts: yes
+  roles:
+    - kubernetes
+    #  tasks:
+    #    - name: Enable sftp
+    #      lineinfile:
+    #        path: /etc/ssh/sshd_config
+    #        line: subsystem sftp /usr/libexec/sftp-server
+    #        create: yes
+    #        owner: root
+    #        group: root
+    #        mode: '0644'
+    #      notify: restart ssh
+    #
+    #    - name: Debug Task
+    #      debug:
+    #        msg: "{{ ansible_hostname }}"
+    #
+    #  handlers:
+    #    - name: restart ssh
+    #      service:
+    #        name: sshd
+    #        state: restarted

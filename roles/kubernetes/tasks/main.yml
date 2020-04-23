@@ -1,0 +1,147 @@
+---
+# tasks file for kubernetes
+#- name: Update server
+#  swupd:
+#    update: yes
+#
+#NOTE: No swupd module can be used until 
+- name: "Update server (workaroud until repo has https)"
+  shell: "swupd update --allow-insecure-http"
+  tags:
+    - prereq
+
+- name: "Install cloud-native-basic bundle"
+  shell: "swupd bundle-add cloud-native-basic --allow-insecure-http"
+  tags:
+    - prereq
+
+- name: "Create /etc/sysctl.d directory"
+  file:
+    path: /etc/sysctl.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+  tags:
+    - prereq
+
+- name: "Enable IPv4 IP forwarding"
+  sysctl:
+    sysctl_file: /etc/sysctl.d/60-k8s.conf
+    name: net.ipv4.ip_forward
+    value: '1'
+    sysctl_set: yes
+    state: present
+    reload: yes
+  tags:
+    - prereq
+
+- name: "Disable swap permanently"
+  shell: "systemctl mask $(sed -n -e 's#^/dev/\\([0-9a-z]*\\).*#dev-\\1.swap#p' /proc/swaps) 2>/dev/null"
+  ignore_errors: yes
+  tags:
+    - prereq
+
+- name: "Disable swap if it is already on"
+  shell: swapoff -a
+  tags:
+    - prereq
+
+- name: "Enable kubelet service"
+  service:
+    name: kubelet.service
+    enabled: yes
+  tags:
+    - prereq
+
+- name: "Add hostname to /etc/hosts"
+  lineinfile:
+    path: /etc/hosts
+    line: "127.0.0.1 localhost {{ ansible_fqdn }} {{ ansible_hostname }}"
+    create: yes
+    owner: root
+    group: root
+    mode: '0644'
+  tags:
+    - prereq
+
+- name: "Create /etc/containerd"
+  file:
+    path: /etc/containerd
+    state: directory
+  tags:
+    - prereq
+
+- name: "Deploy containerd configuration"
+  template:
+    src: "conteinerd-{{ containerd_version }}.toml.j2"
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: 0644
+  tags:
+    - prereq
+
+
+- name: "Run daemon-reload"
+  systemd:
+    daemon_reload: yes
+  tags:
+    - prereq
+
+- name: "Enable and restart containerd"
+  service:
+    name: containerd
+    state: restarted
+    enabled: yes
+  tags:
+    - prereq
+
+- name: "Initialize Kubernetes Cluster"
+  shell: "kubeadm init --apiserver-advertise-address={{ ansible_default_ipv4.address }} --apiserver-cert-extra-sans={{ ansible_default_ipv4.address }} --node-name {{ ansible_hostname}} --pod-network-cidr={{ pod_subnet }}/{{ pod_cidr }}  --image-repository={{ nexus_container_repo }}"
+  when:
+    - inventory_hostname in groups['master'][0]
+  tags:
+    - master
+
+- name: "Deploy Calico CNI"
+  template:
+    src: "calico-{{ calico_version }}.yaml.j2"
+    dest: /tmp/calico.yaml
+    owner: root
+    group: root
+    mode: '0644'
+  tags: 
+    - master
+
+- name: "Setup kubeconfig for {{ run_user }} user on Primary master"
+  file:
+    path: "/home/{{ run_user }}/.kube"
+    state: directory
+    recurse: yes
+    owner: "{{ run_user }}"
+    group: "{{ run_group }}"
+  when: inventory_hostname in groups['master'][0]
+  tags:
+    - master
+
+- name: "Copy kube configuration for {{ run_user }} user on Primary master"
+  copy:
+    src: /etc/kubernetes/admin.conf
+    remote_src: yes
+    dest: "/home/{{ run_user }}/.kube/config"
+    mode: 0644
+    owner: "{{ run_user }}"
+    group: "{{ run_group }}"
+  when: inventory_hostname in groups['master'][0]
+  tags:
+    - master
+
+- name: Deploy a pod network to the cluster
+  become: false
+  command: "kubectl create -f /tmp/calico.yaml"
+  when:
+    - inventory_hostname in groups['master'][0]
+  tags:
+    - master
+
